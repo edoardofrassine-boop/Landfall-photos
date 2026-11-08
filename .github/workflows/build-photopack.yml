@@ -1,0 +1,25 @@
+name: Build photo pack
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install tools
+        run: npm init -y && npm install sharp d3-geo topojson-client world-atlas
+      - name: Build photos
+        run: node build-photopack.mjs
+      - name: Save photos to the repo
+        if: always()
+        run: |
+          git config user.name "photo-bot"
+          git config user.email "photo-bot@users.noreply.github.com"
+          git add photos index.json
+          git commit -m "Update photo pack" || echo "Nothing new to save"
+          git push
