@@ -13,6 +13,11 @@ const API = 'https://commons.wikimedia.org/w/api.php';
 const UA = `LandfallPhotoPack/1.0 (https://github.com/${process.env.GITHUB_REPOSITORY || 'unknown'}; hobby geography game)`;
 const BAD = /\b(map|maps|flag|flags|logo|coat of arms|locator|diagram|chart|stamp|banknote|coin|poster|plaque|screenshot|schematic|document|certificate|portrait|selfie|interior|emblem|seal|label|menu|plan|svg|panel)\b/i;
 
+// Space and satellite pictures, and anything that is not a normal ground-level photo, are never wanted.
+const BAD_TITLE = /(\bISS\d|view of earth|astronaut|satellite|landsat|sentinel|modis|\bnasa\b|space station|from space|orbit|\bsvg\b|\.png|\.gif|\.tif|\.pdf|\bmap\b|\bmaps\b|panorama of the earth)/i;
+const BAD_ARTIST = /(NASA|Earth Science and Remote Sensing|astronaut|ESA\b|European Space Agency|USGS|Copernicus|Johnson Space)/i;
+const isBadPhoto = (title, artist) => BAD_TITLE.test(title || '') || BAD_ARTIST.test(artist || '');
+
 // Name|ISO2|lat|lng|area km2|aliases
 const RAW = `Afghanistan|AF|33.9|67.7|652230|
 Albania|AL|41.1|20.0|28748|
@@ -315,6 +320,16 @@ async function main() {
   };
 
   let index = {}; try { index = JSON.parse(await fs.readFile('index.json', 'utf8')); } catch (e) {}
+  // Clean-up of an earlier run: remove space pictures and other unwanted photos, files included.
+  let purged = 0;
+  for (const iso of Object.keys(index)) {
+    const keep = [];
+    for (const x of index[iso]) {
+      if (isBadPhoto(x.t, x.a)) { purged++; await fs.rm(`photos/${iso}/${x.f}`, { force: true }); } else keep.push(x);
+    }
+    index[iso] = keep;
+  }
+  console.log(`Removed ${purged} unwanted photos from the existing pack.`);
   const used = new Set(Object.values(index).flat().map(x => x.t));
   let bytes = 0;
 
@@ -327,12 +342,12 @@ async function main() {
       tried++; const [lng, lat] = randomPoint(c);
       let found; try { found = await geosearch(lat, lng); } catch (e) { failed++; if (failed > 8) break; continue; }
       await sleep(200);
-      const good = shuffle(found.filter(x => x.mime === 'image/jpeg' && x.w >= 1000 && x.w / x.h > 0.6 && x.w / x.h < 2.3 && x.thumb && !BAD.test(x.title) && !used.has(x.title) && inside(c, x.lng, x.lat)));
+      const good = shuffle(found.filter(x => x.mime === 'image/jpeg' && x.w >= 1000 && x.w / x.h > 0.6 && x.w / x.h < 2.3 && x.thumb && !BAD.test(x.title) && !isBadPhoto(x.title, plain(x.meta.Artist && x.meta.Artist.value)) && !used.has(x.title) && inside(c, x.lng, x.lat)));
       for (const x of good.slice(0, 2)) {
         if (list.length >= TARGET) break;
         try {
           const buf = await sharp(await http(x.thumb, false)).rotate().resize({ width: WIDTH, withoutEnlargement: true }).jpeg({ quality: QUALITY, mozjpeg: true }).toBuffer();
-          const n = list.length + 1, file = `${n}.jpg`; await fs.writeFile(`photos/${c.iso}/${file}`, buf); bytes += buf.length;
+          const n = list.reduce((m, y) => Math.max(m, parseInt(y.f, 10) || 0), 0) + 1, file = `${n}.jpg`; await fs.writeFile(`photos/${c.iso}/${file}`, buf); bytes += buf.length;
           used.add(x.title); list.push({ f: file, t: x.title, a: plain(x.meta.Artist && x.meta.Artist.value).slice(0, 60) || 'unknown', l: plain(x.meta.LicenseShortName && x.meta.LicenseShortName.value), u: x.page });
           await sleep(150);
         } catch (e) { console.log(`  skip photo (${e.message})`); }
@@ -344,7 +359,7 @@ async function main() {
 
   const counts = COUNTRIES.map(c => [c.iso, c.name, (index[c.iso] || []).length]);
   const total = counts.reduce((s, x) => s + x[2], 0), few = counts.filter(x => x[2] < 5);
-  const summary = `Photos: ${total}. New data this run: ${(bytes / 1048576).toFixed(1)} MB.\nCountries with fewer than 5 photos (${few.length}): ${few.map(x => `${x[1]} (${x[2]})`).join(', ') || 'none'}`;
+  const summary = `Removed ${purged} unwanted. Photos: ${total}. New data this run: ${(bytes / 1048576).toFixed(1)} MB.\nCountries with fewer than 5 photos (${few.length}): ${few.map(x => `${x[1]} (${x[2]})`).join(', ') || 'none'}`;
   console.log('\n' + summary);
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, '### Photo pack\n' + summary + '\n');
 }
